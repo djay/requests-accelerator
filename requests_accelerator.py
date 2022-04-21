@@ -10,71 +10,6 @@ from zlib import crc32
 
 
 class FastHTTPAdapter(HTTPAdapter):
-    """
-    a requests [TransportAdapter](https://docs.python-requests.org/en/master/user/advanced/#transport-adapters)
-    to do parallel and resumable downloads for large files.
-
-    Should support the following
-    - not stream and cache in a given dir but only read into memory when you access r.content
-    - stream to paritial files and remove them once read
-    - stream but still cache full file?
-    - no caching and just do it all in memory?
-       - probably doesn't make sense since you normally want this for large downloads
-    - resumability - leave partial downloads
-    - ability to have custom filenames or random ones
-    - no problem with other verbs
-    - custom progress callback or iterator (since streaming for progress won't be very smooth)
-       - e.g. for chunk, position in r.unordered_iter():
-
-    You can fast download a file to a directory using requests by adding a custom TransportAdapter.
-
-    >>> s = requests.Session()
-    >>> s.mount('http://', FastHTTPAdapter(connections=5, cache_dir="/tmp"))
-    >>> s.mount('https://', FastHTTPAdapter(connections=5, cache_dir="/tmp"))
-    >>> url, hashes = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", ["md5=yrCLNhle2xoSMdLQn6RQ4A==","crc32c=x4GOmQ=="]
-    >>> url = "https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_92x30dp.png"
-
-    If you don't access response.content or response.text it won't loaded it into memory and instead can be accessed 
-    via response.path.
-
-    >>> r = s.get(url)
-    >>> r.content == open(r.path, "rb").read()
-    True
-
-    >>> len(r.content) == int(r.headers["content-length"])
-    True
-
-    >>> r.request.method
-    'GET'
-
-    Can also stream the content
-
-    >>> r = s.get(url, stream=True)
-    >>> content = bytes()
-
-    # TODO: should not start downloading until here 
-    >>> for chunk in r.iter_content():
-    ...    content += chunk
-    >>> content == open(r.path, "rb").read()
-    True
-
-    stream content only in memory
-    >>> s.mount('https://', FastHTTPAdapter(connections=5, cache_dir=None))
-    >>> r = s.get(url, stream=True)
-    >>> content = bytes()
-    >>> for chunk in r.iter_content():
-    ...    content += chunk
-    >>> content == open(r.path, "rb").read()
-    True
-
-    # TODO: stream the content removing temp files after reading
-
-    # Related libraries
-    - https://pypi.org/project/parfive/
-
-    Thanks to https://www.geeksforgeeks.org/simple-multithreaded-download-manager-in-python/ for base code to build on
-
-    """
 
     def __init__(self, connections=5, keep=False, cache_dir=".", pool_connections=10, pool_maxsize=10, max_retries=0, pool_block=False):
         self.connections = connections
@@ -469,6 +404,8 @@ def compare_hashes(file, hashes=None):
         for name, lib in libs.items():
             yield f"{name}={lib.hexdigest()}"
         return
+    if type(hashes) == str:
+        hashes = hashes.split(",")
 
     for hash in hashes:
         p = hash.split('=')
