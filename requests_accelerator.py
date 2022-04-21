@@ -11,7 +11,7 @@ from zlib import crc32
 
 class FastHTTPAdapter(HTTPAdapter):
 
-    def __init__(self, connections=5, keep=False, cache_dir=".", pool_connections=10, pool_maxsize=10, max_retries=0, pool_block=False):
+    def __init__(self, pool_connections=10, pool_maxsize=10, max_retries=0, pool_block=False, connections=5, keep=False, cache_dir=None):
         self.connections = connections
         self.dir = cache_dir
         self.keep = keep
