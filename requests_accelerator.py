@@ -230,7 +230,7 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
                     if self.start is None:
                         return data
                 if len(data) >= _bytes:
-                    print(".", end="")
+                    # print(".", end="")
                     return data
             return bytes()
                 # Try and get more
@@ -382,35 +382,61 @@ class FifoFileBuffer(object):
         self.buf.close()
 
 
-def size_hash(buffer):
-    return len(buffer)
+class size_hash(object):
+    def update(self, buffer):
+        self.buffer = buffer
 
-def compare_hashes(file, hashes=None):
+    def hexdigest(self):
+        return str(len(self.buffer))
+
+class crc32_hash(object):
+    def update(self, buffer):
+        self.buffer = buffer
+        
+    def hexdigest(self):
+        return crc32(self.buffer)
+
+
+def gen_hashes(file):
+    """ return dict for callables that will create a hash for this file """
     BUF_SIZE = 65536
     size = 0        
-    libs = dict(sha1=hashlib.sha1(), md5=hashlib.md5(),crc32=crc32,size=size_hash)
+    libs = dict(
+        sha1=hashlib.sha1(), 
+        md5=hashlib.md5(),
+        crc32=crc32_hash(),
+        size=size_hash(),
+        )
     if type(file) == str:
         file = open(file, "rb")
-    with file as f:
-        while True:
-            data = f.read(BUF_SIZE)
-            size += len(data)
-            if not data:
-                break
-            for lib in libs.values():
-                lib.update(data)
-                
-    if hashes == None:
-        for name, lib in libs.items():
-            yield f"{name}={lib.hexdigest()}"
-        return
+    if type(file) == bytes:
+        data = file
+    else:
+        with file as f:
+            data = f.read()
+
+    if not data:
+        return {}
+    for lib in libs.values():
+        lib.update(data)
+    return libs
+
+def compare_hashes(file, hashes):
+    libs = gen_hashes(file)        
     if type(hashes) == str:
         hashes = hashes.split(",")
 
     for hash in hashes:
         p = hash.split('=')
         if p[0] in libs:
-            print (libs.get(p[0]).hexdigest(), p[1])
+            # print (libs.get(p[0]).hexdigest(), p[1])
             if libs.get(p[0]).hexdigest() != p[1]:
                 return False
     return True
+
+
+def compute_hashes(file):
+    libs = gen_hashes(file)
+    for name, lib in libs.items():
+        yield f"{name}={lib.hexdigest()}"
+    return
