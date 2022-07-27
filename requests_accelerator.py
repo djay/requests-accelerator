@@ -66,7 +66,8 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
         file_size = -1
     # 2MB min so don't use lots of threads for small files
     part = max(int(file_size / number_of_threads), 2*2**20)
-    if file_name is not None and keep:
+    single_file = file_name is not None and keep and not stream
+    if single_file:
         with io.open(file_name, "wb") as fp:
             try:
                 fp.truncate(max(file_size, 0))
@@ -144,10 +145,17 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
             def remain(start): return ends[start]-start-state[start]
             if ends[start] == -1:
                 # special case where we aren't doing range requests and want to keep going until the end
+                if progress:
+                    # TODO: handle cancelling here
+                    progress(url_of_file, sum([s for s in state.values() if type(s) == int]), file_size)
                 pass
             elif remain(start) <= 0:
                 # we finished. Find the slowest who has the most remaining and help them out
                 history.append((time.time(), saved))
+                if progress:
+                    # TODO: handle cancelling here
+                    progress(url_of_file, sum([s for s in state.values() if type(s) == int]), file_size)
+
                 sstart = sorted(state.keys(), key=remain, reverse=False).pop()
                 # ensure slowest only gets half
                 send = ends[sstart]
@@ -186,7 +194,7 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
                 log("User cancelled download {}".format(url_of_file), "warning")
                 return (start, 0, None)
         # create a Thread with start and end locations
-        files[start] = get_fp(start, file_name, not stream)
+        files[start] = get_fp(start, file_name, single_file)
         kwargs = {'fp':files[start], 'start': start, 'end': end, 'url': url_of_file, 'update': update_state, 'session': session, 'chunk_size': chunk_size}
         t = threading.Thread(target=Handler, kwargs=kwargs)
         t.setDaemon(True)
@@ -215,7 +223,10 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
     r._content = False
     r._content_consumed = False
     r._next = None
-    r.elapsed = datetime.timedelta(seconds=last_update - started)
+    if not last_update:
+        r.elapsed = 0
+    else:
+        r.elapsed = datetime.timedelta(seconds=last_update - started)
 
     return r
 

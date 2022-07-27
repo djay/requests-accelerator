@@ -11,8 +11,9 @@ MED_FILE = "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4
 def test_content_file():
 
     s = requests.Session()
-    s.mount('http://', FastHTTPAdapter(connections=5, dir="/tmp"))
-    s.mount('https://', FastHTTPAdapter(connections=5, dir="/tmp"))
+    adapter = FastHTTPAdapter(connections=5, dir="/tmp", keep=True)
+    s.mount('http://', adapter)
+    s.mount('https://', adapter)
     
     r = s.get(SMALL_FILE)
     assert(r.content == open(r.path, "rb").read())
@@ -40,7 +41,7 @@ def test_stream_ram():
         content.write(chunk)
     assert(content.getbuffer() == requests.get(MED_FILE).content)
 
-def test_stream_ram_large():
+def test_stream_ram_speedtest():
 
     size = 1024*100
     url = MED_FILE
