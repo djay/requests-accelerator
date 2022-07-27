@@ -1,3 +1,4 @@
+import codecs
 import requests
 import io
 import time
@@ -11,10 +12,11 @@ from zlib import crc32
 
 class FastHTTPAdapter(HTTPAdapter):
 
-    def __init__(self, pool_connections=10, pool_maxsize=10, max_retries=0, pool_block=False, connections=5, keep=False, cache_dir=None):
+    def __init__(self, pool_connections=10, pool_maxsize=10, max_retries=0, pool_block=False, connections=5, keep=False, dir=None, progress=None):
         self.connections = connections
-        self.dir = cache_dir
+        self.dir = dir
         self.keep = keep
+        self.progress = progress
         super(FastHTTPAdapter, self).__init__(pool_connections, pool_maxsize, max_retries, pool_block)
 
     def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):
@@ -22,7 +24,7 @@ class FastHTTPAdapter(HTTPAdapter):
             response = super(FastHTTPAdapter, self).send(request, stream, timeout, verify, cert, proxies)
             return response
         else:
-            response = download_file(request.url, number_of_threads=self.connections, stream=stream, cache_dir=self.dir)
+            response = download_file(request.url, number_of_threads=self.connections, stream=stream, cache_dir=self.dir, keep=self.keep, progress=self.progress)
             return response
 
 
@@ -31,7 +33,7 @@ def log(msg, level):
     pass
 
 
-def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, progress=None, chunk_size=1024, timeout=10, session=None, stream=False, cache_dir=None):
+def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, progress=None, chunk_size=1024, timeout=10, session=None, stream=False, cache_dir=None, keep=False):
     if cache_dir is None:
         file_name = None
     else:
@@ -64,7 +66,7 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
         file_size = -1
     # 2MB min so don't use lots of threads for small files
     part = max(int(file_size / number_of_threads), 2*2**20)
-    if file_name is not None:
+    if file_name is not None and keep:
         with io.open(file_name, "wb") as fp:
             try:
                 fp.truncate(max(file_size, 0))
@@ -106,16 +108,19 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
         ends[start] = end
 
         #TODO: create files here or when thread finished, and pass in
-        def get_fp(start, filename=file_name):
+        def get_fp(start, filename=file_name, single=False):
             if filename == None:
                 return FifoFileBuffer()
+            elif not single:
+                fp = io.open("{}.{}".format(filename, start), "wb")
+                return fp
             else:
                 fp = io.open(filename, "r+b")
                 try:
                     fp.seek(start, 0)
                 except IOError as e:
                     log("IOError seeking to start of write {}-{}: {}".format(start, end, e), "error")
-                    update(e)
+                    update(e, start)
                     return
                 return fp
 
@@ -155,7 +160,7 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
                 # create a new state
                 state[halfway], ends[halfway] = 0, send
                 # tell the thread to switch to this
-                fp = get_fp(halfway, file_name)
+                fp = get_fp(halfway, file_name, not stream)
                 files[halfway] = fp
                 return (halfway, send, fp)
 
@@ -170,7 +175,8 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
             weighted_speed = (total_speed + speed*2)/3
             remain = 1/weighted_speed * (file_size-saved)
             est = time.time()-started + remain
-            if progress(saved, file_size, "{:0.1f}MB/s {:0.0f}/{:0.0f}s".format(speed, remain, est), dict(state=state)) is not False:
+            prog_desc = "{:0.1f}MB/s {:0.0f}/{:0.0f}s".format(speed, remain, est)
+            if progress(url_of_file, saved, file_size) is not False:
                 history.append((time.time(), saved))
                 return (start, end, files[start])
             else:
@@ -180,7 +186,7 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
                 log("User cancelled download {}".format(url_of_file), "warning")
                 return (start, 0, None)
         # create a Thread with start and end locations
-        files[start] = get_fp(start, file_name)
+        files[start] = get_fp(start, file_name, not stream)
         kwargs = {'fp':files[start], 'start': start, 'end': end, 'url': url_of_file, 'update': update_state, 'session': session, 'chunk_size': chunk_size}
         t = threading.Thread(target=Handler, kwargs=kwargs)
         t.setDaemon(True)
@@ -190,65 +196,22 @@ def download_file(url_of_file, name=None, number_of_threads=15, est_filesize=0, 
     if not stream: 
         for t in threads:
             t.join()
-    class CombineFiles(io.IOBase):
-        # Reads along the files we have as they written to
-        start = 0
-        pos = 0
-        fp = None
-        def read(self, _bytes):
-            data = bytes()
-            while self.start is not None:
-                # get cur file and check if its ready
-                block_pos = state.get(self.start)
-                if block_pos < self.pos:
-                    # if not ready yet then wait
-                    is_updated.wait(0.1)
-                    is_updated.clear()
-                    continue
-                if self.fp is None:
-                    # Open new fp for reading
-                    fp = files[self.start]
-                    if getattr(fp, 'name', None):
-                        self.fp = open(fp.name, "rb")
-                    else:
-                        self.fp = fp
-                    
-                end = ends.get(self.start)
-                # we have more to read
-                to_read = min(_bytes - len(data), block_pos - self.pos, end + 1 - self.start - self.pos)
-                read = self.fp.read(to_read)
-                data += read
-                self.pos += len(read)
-                if self.pos >= (end - self.start):
-                    # Reached the end
-                    if self.fp:
-                        self.fp.close()
-                        files[self.start].close()
-                    self.fp = None
-                    self.pos = 0
-                    self.start = next((s for s in sorted(files.keys()) if s > self.start), None)
-                    if self.start is None:
-                        return data
-                if len(data) >= _bytes:
-                    # print(".", end="")
-                    return data
-            return bytes()
                 # Try and get more
     # TODO: if cancelled we should delete the file
 
     # Adjust the head response to be GET with whole file
     last_update, last_saved = history[-1]
-    if last_update is None:
+    if last_update is None and file_name:
         os.remove(file_name)
         r.headers['content-length'] = 0
     else:
         r.headers['content-length'] = file_size
-    r.path = file_name
     r.request.method = "GET"
-    if not stream:
+    if not stream and file_name is not None and keep:
+        r.path = file_name
         r.raw = open(file_name, "rb")
     else:
-        r.raw = CombineFiles()
+        r.raw = CombineFiles(files, state, ends, is_updated)
     r._content = False
     r._content_consumed = False
     r._next = None
@@ -267,7 +230,7 @@ def Handler(fp, start, end, url, update, session, chunk_size):
         log("Connection Error chunk {}-{}: {}".format(start, end, e), 'error')
         # Some errors get dealt with by the retry mechanism in the session
         # inc We get ConnectionError: ('Connection aborted.', BadStatusLine("''",))
-        update(e)  # will make the thread as bad
+        update(e, start)  # will make the thread as bad
         # TODO: ensure these get retried again at the end?
         return
     # see https://stackoverflow.com/questions/29729082/python-fails-to-open-11gb-csv-in-r-mode-but-opens-in-r-mode
@@ -313,6 +276,58 @@ def Handler(fp, start, end, url, update, session, chunk_size):
                 # Continue on
                 pass
 
+class CombineFiles(io.IOBase):
+    """A virtual file that reads and closes many files making up the whole download"""
+    def __init__(self, files, state, ends, is_updated):
+        self.files = files
+        self.state = state
+        self.ends = ends
+        self.is_updated = is_updated
+
+        self.start = 0
+        self.pos = 0
+        self.fp = None
+
+    def read(self, _bytes):
+        data = bytes()
+        while self.start is not None:
+            # get cur file and check if its ready
+            block_pos = self.state.get(self.start)
+            if block_pos < self.pos:
+                # if not ready yet then wait
+                self.is_updated.wait(0.1)
+                self.is_updated.clear()
+                continue
+            if self.fp is None:
+                # Open new fp for reading
+                fp = self.files[self.start]
+                if getattr(fp, 'name', None):
+                    self.fp = open(fp.name, "rb")
+                else:
+                    self.fp = fp
+                
+            end = self.ends.get(self.start)
+            # we have more to read
+            to_read = min(_bytes - len(data), block_pos - self.pos, end + 1 - self.start - self.pos)
+            read = self.fp.read(to_read)
+            data += read
+            self.pos += len(read)
+            if self.pos >= (end - self.start):
+                # Reached the end
+                if self.fp:
+                    self.fp.close()
+                    self.files[self.start].close()
+                    if hasattr(self.files[self.start], "name"):
+                        os.remove(self.files[self.start].name)
+                self.fp = None
+                self.pos = 0
+                self.start = next((s for s in sorted(self.files.keys()) if s > self.start), None)
+                if self.start is None:
+                    return data
+            if len(data) >= _bytes:
+                # print(".", end="")
+                return data
+        return bytes()
 
 
 class FifoFileBuffer(object):
@@ -382,6 +397,115 @@ class FifoFileBuffer(object):
         self.buf.close()
 
 
+
+class ReadOverWriteFile(object):
+    """
+    Opens a file for reading and can be written as it's being read.
+
+    Create a dummy file
+
+    >>> import tempfile
+    >>> from contextlib import closing
+    >>> temp_name = next(tempfile._get_candidate_names())
+    >>> with open(temp_name, "w") as fp:
+    ...     _ = fp.writelines(['name1,name2\\r\\n'] + (['foo,bar\\r\\n'] * 3))
+
+    Reopen it and rewrite it as we go
+
+    >>> with closing(ReadOverWriteFile(temp_name)) as fp:
+    ...    for line in fp:
+    ...       _ = fp.write(line.replace("foo",""))
+    >>> print(open(temp_name).read())
+    name1,name2
+    ,bar
+    ,bar
+    ,bar
+    <BLANKLINE>
+
+    More complicated test with csv.writer
+    >>> import csv
+    >>> with closing(ReadOverWriteFile(temp_name)) as fp:
+    ...    reader = csv.DictReader(fp)
+    ...    writer = csv.DictWriter(fp, fieldnames=reader.fieldnames, newline="\\n")
+    ...    _ = writer.writeheader()
+    ...    for num, line in enumerate(fp):
+    ...           # _ = writer.writerow(dict(name2="f"))
+    ...           _ = fp.write(line.replace("bar","f"))
+    >>> print(open(temp_name).read())
+    name1,name2
+    ,f
+    ,f
+    ,f
+    <BLANKLINE>
+
+    But if we make the lines longer we get problems
+    >>> with closing(ReadOverWriteFile(temp_name)) as fp:
+    ...    for line in fp:
+    ...        _ = fp.write(line.replace("f", "foobarfoobar"))
+    Traceback (most recent call last):
+     ...
+    OSError: Can't write more than you read
+    """
+
+    def __init__(self, path, **params):
+        self.buf = codecs.open(path, "r+", **params)
+        self.write_fp = 0
+        self.temp_buf = None
+
+    def read(self, size = None):
+        # if self.temp_buf is not None:
+        #     data = self.temp_buf.read(size)
+        #     if size is None or len(data) < size:
+        #         self.temp_buf = None
+        #         data += self.buf.read(None if size is None else size - len(data))
+        #     return data
+        return self.buf.read(size)
+
+    def readline(self, size = -1):
+        return self.buf.readline(size)
+    
+    def __iter__(self):
+        while True:
+            line = self.readline()
+            if line == '':
+                break
+            yield line
+
+    def write(self, data):
+        read_fp = self.buf.tell()
+        self.buf.seek(self.write_fp)
+        # written = len(data)
+        # overlap = read_fp - self.writefp + written
+        # if overlap > 0:
+        #     if self.temp_buf is None:
+        #         self.temp_buf = io.StringIO()
+        #     tread_fp = self.temp_buf.tell()
+        #     self.temp_buf.seek(-1)
+        #     self.temp_buf.write(self.buf.read(overlap))
+        #     self.temp_buf.seek(tread_fp)
+        self.buf.write(data)
+        written = self.buf.tell() - self.write_fp 
+        self.write_fp = self.buf.tell()
+        if self.write_fp > read_fp:
+            raise IOError("Can't write more than you read")
+        self.buf.seek(read_fp)
+        return written
+
+    def writelines(self, lines):
+        for data in lines:
+            self.write(data)
+
+    def flush(self):
+        self.buf.flush()
+
+    def tell(self):
+        return self.write_fp
+
+    def close(self):
+        self.buf.truncate(self.write_fp)
+        self.buf.close()
+
+
 class size_hash(object):
     def update(self, buffer):
         self.buffer = buffer
@@ -422,7 +546,12 @@ def gen_hashes(file):
     return libs
 
 def compare_hashes(file, hashes):
-    libs = gen_hashes(file)        
+    libs = gen_hashes(file)
+    if hasattr(hashes, "headers"):
+        request = hashes
+        hashes = request.headers.get("x-goog-hash")
+        if hashes is None:
+            hashes = f"size={request.headers['content-length']}"
     if type(hashes) == str:
         hashes = hashes.split(",")
 

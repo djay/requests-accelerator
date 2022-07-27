@@ -11,8 +11,8 @@ MED_FILE = "https://archive.org/download/BigBuckBunny_328/BigBuckBunny_512kb.mp4
 def test_content_file():
 
     s = requests.Session()
-    s.mount('http://', FastHTTPAdapter(connections=5, cache_dir="/tmp"))
-    s.mount('https://', FastHTTPAdapter(connections=5, cache_dir="/tmp"))
+    s.mount('http://', FastHTTPAdapter(connections=5, dir="/tmp"))
+    s.mount('https://', FastHTTPAdapter(connections=5, dir="/tmp"))
     
     r = s.get(SMALL_FILE)
     assert(r.content == open(r.path, "rb").read())
@@ -21,31 +21,32 @@ def test_content_file():
 
 def test_stream_file():
     s = requests.Session()
-    s.mount('https://', FastHTTPAdapter(connections=5, cache_dir="/tmp"))
-    r = s.get(SMALL_FILE, stream=True)
+    s.mount('http://', FastHTTPAdapter(connections=5, dir="."))
+    r = s.get(LARGE_FILE, stream=True)
 
     # TODO: test nothing downloaded yet?
-    content = bytes()
-    for chunk in r.iter_content():
-        content += chunk
-    assert(content == open(r.path, "rb").read())
+    content = io.BytesIO()
+    for chunk in r.iter_content(10240):
+        content.write(chunk)
+    #assert(bytes(content.getbuffer()) == requests.get(SMALL_FILE).content)
+    assert(compare_hashes(content, ['crc32c=x4GOmQ==','md5=yrCLNhle2xoSMdLQn6RQ4A==']))
 
 def test_stream_ram():
     s = requests.Session()
-    s.mount('https://', FastHTTPAdapter(connections=10, cache_dir=None))
-    r = s.get(SMALL_FILE, stream=True)
-    content = bytes()
-    for chunk in r.iter_content():
-        content += chunk
-    assert(content == requests.get(SMALL_FILE).content)
+    s.mount('https://', FastHTTPAdapter(connections=10, dir=None))
+    r = s.get(MED_FILE, stream=True)
+    content = io.BytesIO()
+    for chunk in r.iter_content(1024):
+        content.write(chunk)
+    assert(content.getbuffer() == requests.get(MED_FILE).content)
 
 def test_stream_ram_large():
 
     size = 1024*100
     url = MED_FILE
     s = requests.Session()
-    s.mount('https://', FastHTTPAdapter(connections=15, cache_dir=None))
-    s.mount('http://', FastHTTPAdapter(connections=15, cache_dir=None))
+    s.mount('https://', FastHTTPAdapter(connections=15, dir=None))
+    s.mount('http://', FastHTTPAdapter(connections=15, dir=None))
     start = time.time()
     r = s.get(url, stream=True)
     content = io.BytesIO()
