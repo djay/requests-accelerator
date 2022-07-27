@@ -91,14 +91,14 @@ Since progress in downloading is no longer linear you can use an alternative cal
     ...    print("o", end="")
     >>> s.mount('http://', requests_accelerator.FastHTTPAdapter(progress=progress))
     >>> r = s.get(url)
-    oooooooooooooooooooooo
+    oooooo...oooooo
 
 you can also use a special iterator to provide progress
 
     >>> # TODO 
-    >>> # done = 0
-    >>> # for chunk, position in r.unordered_iter():
-    ... #   progress = (done := done + len(chunk)) / r.header['content-length']
+    # >>> done = 0
+    # >>> for chunk, position in r.unordered_iter():
+    # ...   progress = (done := done + len(chunk)) / r.header['content-length']
 
 # Resuming
 
